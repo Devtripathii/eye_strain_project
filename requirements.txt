@@ -2,7 +2,7 @@ streamlit
 streamlit-webrtc
 av
 
-opencv-python
+opencv-python-headless
 mediapipe
 numpy
 pandas
