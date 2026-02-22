@@ -1,0 +1,48 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.so
+*.egg-info/
+dist/
+build/
+
+# ---- Virtualenvs ----
+env/
+venv/
+.venv/
+env_cv311/
+.conda/
+
+# ---- IDE ----
+.vscode/
+.idea/
+*.iml
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- Streamlit ----
+.streamlit/
+
+# ---- Outputs / logs ----
+outputs/
+*.log
+
+# ---- Data / datasets (keep local, not in GitHub) ----
+mrleyes/
+eye_dataset/
+rt_bene_extracted/
+data/raw/
+data/processed/
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# ---- Models (choose 1 approach) ----
+# If you want to store model weights in GitHub, comment the next line.
+models/*.pth
+models/*.pt
