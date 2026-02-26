@@ -637,6 +637,10 @@ st.caption("Just click **Start 60s Assessment**. The camera runs in the backgrou
 
 with st.expander("Camera preview (optional)", expanded=False):
     st.caption("If your browser asks, allow camera permission.")
+    # Version-safe webrtc_streamer call:
+# - Some streamlit-webrtc versions support start_playing
+# - desired_playing is NOT supported on many versions
+try:
     webrtc_ctx = webrtc_streamer(
         key=WEBRTC_KEY,
         mode=WebRtcMode.SENDRECV,
@@ -644,7 +648,17 @@ with st.expander("Camera preview (optional)", expanded=False):
         media_stream_constraints={"video": True, "audio": False},
         async_processing=True,
         rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-        desired_playing=True,  # auto-start (reduces need to click WebRTC Start)
+        start_playing=True,   # supported on some versions
+    )
+except TypeError:
+    # Fallback for older versions: no auto-start flag available
+    webrtc_ctx = webrtc_streamer(
+        key=WEBRTC_KEY,
+        mode=WebRtcMode.SENDRECV,
+        video_processor_factory=EyeProcessor,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
     )
 
 processor = webrtc_ctx.video_processor if 'webrtc_ctx' in locals() else None
