@@ -12,7 +12,6 @@ import threading
 from collections import deque
 
 import cv2
-import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -36,6 +35,9 @@ st.set_page_config(page_title="Eye Comfort Assistant (Webcam)", layout="wide")
 st.title("👁️ Eye Comfort Assistant (Browser Webcam)")
 st.caption("Runs in the browser using WebRTC webcam. Not a medical diagnosis.")
 
+# IMPORTANT: stable version marker so you can confirm cloud updated
+APP_VERSION = "webrtc-stable-v2"
+st.caption(f"Build: `{APP_VERSION}`")
 
 FOCUS_TEXTS = [
     "Read naturally. Don’t force blinking.",
@@ -92,10 +94,7 @@ def _break_friendly(mode: str, remaining_sec: float) -> tuple[str, str]:
         return ("🟠 Short break", f"Stand up, stretch, drink water.\n\nTime left: **{remaining_sec:.0f}s**")
     if mode == "LONG":
         return ("🔴 Long break", f"Step away from the screen completely.\n\nTime left: **{remaining_sec:.0f}s**")
-    return ("✅ Continue", "You can continue."
-
-
-)
+    return ("✅ Continue", "You can continue.")
 
 
 # ---------------- Paths ----------------
@@ -115,14 +114,13 @@ if "baseline_ear" not in st.session_state:
     st.session_state.baseline_ear = None
 if "ear_threshold" not in st.session_state:
     st.session_state.ear_threshold = None
-if "last_session_payload" not in st.session_state:
-    st.session_state.last_session_payload = None
-
-# calibration / run timers
 if "calib_start_ts" not in st.session_state:
     st.session_state.calib_start_ts = None
 if "run_start_ts" not in st.session_state:
     st.session_state.run_start_ts = None
+
+# CRITICAL: constant WebRTC key (never change)
+WEBRTC_KEY = "eye-comfort-stable"
 
 
 def load_session_files():
@@ -148,15 +146,11 @@ def load_session_files():
     return rows
 
 
-# ---------------- Video Processor (runs on webcam frames) ----------------
+# ---------------- Video Processor ----------------
 class EyeProcessor(VideoProcessorBase):
-    """
-    Processes webcam frames arriving from streamlit-webrtc.
-    Stores latest metrics in self.last for the UI to read.
-    """
-
     def __init__(self):
         self.lock = threading.Lock()
+
         self.last = {
             "ok": False,
             "msg": "Waiting for camera...",
@@ -180,32 +174,50 @@ class EyeProcessor(VideoProcessorBase):
             "cnn_trend": None,
         }
 
-        # Core modules (per-processor instance)
         self.timebase = Timebase(fps_window=30, dt_max=0.25)
         self.fm = FaceMeshLandmarker(min_det=0.25, min_track=0.25, refine=False)
 
-        self.cnn = None  # lazy init if enabled
+        self.cnn = None
         self.cnn_ewma = None
         self.cnn_hist = deque(maxlen=25)
         self.cnn_frames = 0
         self.last_roi = None
 
-        # runtime objects (created after calibration)
         self.blink = None
         self.fatigue = None
-
         self.fatigue_load = None
         self.scheduler = None
         self.blink_dur = None
 
-        # for calibration sampling
         self._calib_ears: list[float] = []
-
-        # for logging
         self._rows: list[dict] = []
 
+    def _update_last(self, **kwargs):
+        with self.lock:
+            self.last.update(kwargs)
+
+    def get_last(self) -> dict:
+        with self.lock:
+            return dict(self.last)
+
+    def pop_rows(self) -> list[dict]:
+        with self.lock:
+            return list(self._rows)
+
+    def clear_rows(self):
+        with self.lock:
+            self._rows = []
+
+    def _ensure_cnn(self, enable: bool):
+        if not enable:
+            return
+        if self.cnn is not None:
+            return
+        if CNN_PATH.exists():
+            self.cnn = TorchEyeCnn(CNN_PATH, grayscale=True, device="cpu")
+
     def _init_runtime(self, ear_threshold: float, cfg: dict):
-        self.blink = BlinkCounter(ear_threshold)
+        self.blink = BlinkCounter(float(ear_threshold))
         self.fatigue = FatigueMetrics(fps=20, window_seconds=30)
 
         self.fatigue_load = FatigueLoad(
@@ -243,67 +255,36 @@ class EyeProcessor(VideoProcessorBase):
             max_dt=0.25,
         )
 
-    def _ensure_cnn(self, enable: bool):
-        if not enable:
-            return
-        if self.cnn is not None:
-            return
-        if CNN_PATH.exists():
-            self.cnn = TorchEyeCnn(CNN_PATH, grayscale=True, device="cpu")
-
-    def _update_last(self, **kwargs):
-        with self.lock:
-            self.last.update(kwargs)
-
-    def get_last(self) -> dict:
-        with self.lock:
-            return dict(self.last)
-
-    def pop_rows(self) -> list[dict]:
-        with self.lock:
-            r = list(self._rows)
-            return r
-
-    def clear_rows(self):
-        with self.lock:
-            self._rows = []
-
     def recv(self, frame):
-        """
-        Called for each webcam frame.
-        """
         tick = self.timebase.tick()
         dt = float(tick.dt)
         fps = float(tick.fps)
 
         img_bgr = frame.to_ndarray(format="bgr24")
 
-        # Read current control state from Streamlit session (global)
+        cfg = st.session_state._cfg
         phase = st.session_state.phase
-        calib_sec = float(st.session_state._cfg["calib_sec"])
-        duration_sec = float(st.session_state._cfg["duration_sec"])
-        baseline_ear = st.session_state.baseline_ear
-        ear_threshold = st.session_state.ear_threshold
 
-        # landmarks
         lms = self.fm.get_landmarks(img_bgr)
         if lms is None:
-            self._update_last(ok=False, msg="Face not detected. Keep your face centered.", dt=dt, fps=fps)
+            self._update_last(ok=False, msg="Face not detected. Center your face.", dt=dt, fps=fps)
             return frame
 
         h, w = img_bgr.shape[:2]
         ear = float(ear_both_eyes(lms, w, h))
 
-        # ---------- CALIBRATION ----------
         if phase == "CALIB":
             if st.session_state.calib_start_ts is None:
                 st.session_state.calib_start_ts = time.time()
                 self._calib_ears = []
+                self.clear_rows()
+                self.cnn_ewma = None
+                self.cnn_hist.clear()
 
             t_cal = time.time() - float(st.session_state.calib_start_ts)
             self._calib_ears.append(float(ear))
 
-            progress = min(1.0, t_cal / max(1e-6, calib_sec))
+            progress = min(1.0, t_cal / max(1e-6, float(cfg["calib_sec"])))
 
             self._update_last(
                 ok=True,
@@ -312,60 +293,41 @@ class EyeProcessor(VideoProcessorBase):
                 dt=dt,
                 fps=fps,
                 ear=float(ear),
-                ear_drop_ratio=None,
-                blink_rate=None,
-                perclos=None,
-                risk_level=None,
-                risk_score=None,
-                comfort=None,
-                fatigue_load=None,
-                break_mode="WORK",
-                break_remaining_sec=0.0,
-                microsleeps_window=0,
             )
 
-            # finish calibration
-            if t_cal >= calib_sec and len(self._calib_ears) >= 10:
+            if t_cal >= float(cfg["calib_sec"]) and len(self._calib_ears) >= 10:
                 baseline = float(sum(self._calib_ears) / len(self._calib_ears))
-                calib_factor = 0.75
-                threshold = float(baseline * calib_factor)
+                threshold = float(baseline * 0.75)
 
                 st.session_state.baseline_ear = baseline
                 st.session_state.ear_threshold = threshold
 
-                # Save profile
                 PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-                profile_path = PROFILE_DIR / f"{st.session_state._cfg['user_name']}.json"
+                profile_path = PROFILE_DIR / f"{cfg['user_name']}.json"
                 with open(profile_path, "w", encoding="utf-8") as f:
-                    json.dump(
-                        {"user": st.session_state._cfg["user_name"], "baseline_ear": baseline, "ear_threshold": threshold},
-                        f,
-                        indent=2,
-                    )
+                    json.dump({"user": cfg["user_name"], "baseline_ear": baseline, "ear_threshold": threshold}, f, indent=2)
 
-                # init runtime components
-                self._init_runtime(ear_threshold=threshold, cfg=st.session_state._cfg)
-                self.clear_rows()
-
+                self._init_runtime(ear_threshold=threshold, cfg=cfg)
                 st.session_state.phase = "RUN"
                 st.session_state.run_start_ts = time.time()
                 st.session_state.calib_start_ts = None
 
             return frame
 
-        # ---------- RUN ----------
         if phase == "RUN":
             if st.session_state.run_start_ts is None:
                 st.session_state.run_start_ts = time.time()
 
             t_run = time.time() - float(st.session_state.run_start_ts)
 
-            # ensure runtime initialized (in case of rerun)
-            if self.blink is None or self.fatigue is None or self.fatigue_load is None or self.scheduler is None or self.blink_dur is None:
-                if ear_threshold is None:
-                    self._update_last(ok=False, msg="Missing calibration. Press Start again.", dt=dt, fps=fps)
-                    return frame
-                self._init_runtime(ear_threshold=float(ear_threshold), cfg=st.session_state._cfg)
+            ear_threshold = st.session_state.ear_threshold
+            baseline_ear = st.session_state.baseline_ear
+            if ear_threshold is None:
+                self._update_last(ok=False, msg="Missing calibration. Press Start again.", dt=dt, fps=fps)
+                return frame
+
+            if self.blink is None:
+                self._init_runtime(ear_threshold=float(ear_threshold), cfg=cfg)
 
             ear_drop_ratio = None
             if baseline_ear is not None and float(baseline_ear) > 0:
@@ -377,16 +339,15 @@ class EyeProcessor(VideoProcessorBase):
             blink_event, ms_count = self.blink_dur.update(closed=bool(closed), dt=float(dt), t_sec=float(t_run))
             microsleep_event = bool(blink_event.is_microsleep) if blink_event is not None else False
 
-            # ROI + CNN
-            self._ensure_cnn(bool(st.session_state._cfg["enable_cnn"]))
+            self._ensure_cnn(bool(cfg["enable_cnn"]))
             cnn_prob = None
-            if st.session_state._cfg["enable_cnn"] and self.cnn is not None:
+            if cfg["enable_cnn"] and self.cnn is not None:
                 roi = crop_both_eyes(img_bgr, lms, pad=0.55)
                 if roi is not None:
                     self.last_roi = roi
 
                 self.cnn_frames += 1
-                if self.last_roi is not None and (self.cnn_frames % int(st.session_state._cfg["cnn_every_n_frames"]) == 0):
+                if self.last_roi is not None and (self.cnn_frames % int(cfg["cnn_every_n_frames"]) == 0):
                     res = self.cnn.predict_roi_bgr(self.last_roi)
                     if res is not None:
                         cnn_prob = float(res.sleepy_prob)
@@ -394,7 +355,7 @@ class EyeProcessor(VideoProcessorBase):
                         if self.cnn_ewma is None:
                             self.cnn_ewma = cnn_prob
                         else:
-                            a = float(st.session_state._cfg["ewma_alpha"])
+                            a = float(cfg["ewma_alpha"])
                             self.cnn_ewma = (a * cnn_prob) + ((1.0 - a) * self.cnn_ewma)
 
             trend_cnn = None
@@ -408,8 +369,7 @@ class EyeProcessor(VideoProcessorBase):
                 lstm_prob=None,
             )
 
-            # scheduler + fatigue load
-            if st.session_state._cfg["enable_scheduler"]:
+            if cfg["enable_scheduler"]:
                 on_break = self.scheduler.is_on_break()
                 F = self.fatigue_load.update(risk01=float(score_live), dt=float(dt), working=(not on_break), quality01=1.0)
                 sched_state = self.scheduler.update(
@@ -429,17 +389,13 @@ class EyeProcessor(VideoProcessorBase):
             comfort = comfort_score_from_risk(float(score_live))
             band, band_emoji = comfort_band(comfort)
 
-            # Save row (for report)
             row = {
                 "t": round(float(t_run), 2),
-                "dt": float(dt),
                 "fps": float(fps),
                 "ear": round(float(ear), 3),
                 "ear_drop_ratio": None if ear_drop_ratio is None else float(ear_drop_ratio),
-                "blink_count": int(blink_count),
                 "blink_rate_bpm": float(blink_rate),
                 "perclos": float(perclos),
-                "blink_duration_ms": None if blink_event is None else float(blink_event.duration_sec * 1000.0),
                 "microsleep_event": bool(microsleep_event),
                 "microsleep_count_window": int(ms_count),
                 "cnn_sleepy_prob": None if cnn_prob is None else float(cnn_prob),
@@ -452,7 +408,6 @@ class EyeProcessor(VideoProcessorBase):
                 "break_mode": str(break_mode),
                 "break_remaining_sec": float(break_remaining),
             }
-
             with self.lock:
                 self._rows.append(row)
 
@@ -479,18 +434,16 @@ class EyeProcessor(VideoProcessorBase):
                 cnn_trend=None if trend_cnn is None else float(trend_cnn),
             )
 
-            # stop when duration reached
-            if t_run >= duration_sec:
+            if t_run >= float(cfg["duration_sec"]):
                 st.session_state.phase = "DONE"
 
             return frame
 
-        # ---------- DONE / IDLE ----------
         self._update_last(ok=True, msg="Idle", dt=dt, fps=fps, ear=float(ear))
         return frame
 
 
-# ---------------- Sidebar (simple) ----------------
+# ---------------- Sidebar ----------------
 with st.sidebar:
     st.header("Quick Settings")
 
@@ -538,7 +491,6 @@ with st.sidebar:
                 st.caption("No sessions found yet.")
 
 
-# pack config into session for the processor to use
 st.session_state._cfg = {
     "user_name": user_name,
     "duration_sec": float(duration_sec),
@@ -562,60 +514,47 @@ st.session_state._cfg = {
 
 
 # ---------------- Top controls ----------------
-bar1, bar2, bar3, bar4 = st.columns([1.2, 1.2, 1.2, 2.4])
+bar1, bar2, bar3 = st.columns([1.4, 1.4, 2.2])
 
 with bar1:
+    # NOTE: no st.rerun() here (Streamlit reruns automatically on click)
     if st.session_state.phase in ("IDLE", "DONE"):
-        if st.button("▶ Start", type="primary", use_container_width=True):
+        if st.button("▶ Start assessment", type="primary", use_container_width=True):
             st.session_state.phase = "CALIB"
             st.session_state.rows = []
             st.session_state.baseline_ear = None
             st.session_state.ear_threshold = None
             st.session_state.calib_start_ts = None
             st.session_state.run_start_ts = None
-            st.rerun()
     else:
-        st.button("▶ Start", disabled=True, use_container_width=True)
+        st.button("▶ Start assessment", disabled=True, use_container_width=True)
 
 with bar2:
     if st.session_state.phase in ("CALIB", "RUN"):
-        if st.button("🛑 Stop", use_container_width=True):
+        if st.button("⏸ Stop (go idle)", use_container_width=True):
             st.session_state.phase = "IDLE"
             st.session_state.calib_start_ts = None
             st.session_state.run_start_ts = None
-            st.rerun()
     else:
-        st.button("🛑 Stop", disabled=True, use_container_width=True)
+        st.button("⏸ Stop (go idle)", disabled=True, use_container_width=True)
 
 with bar3:
-    if st.button("⏹ Reset", use_container_width=True):
-        st.session_state.phase = "IDLE"
-        st.session_state.rows = []
-        st.session_state.baseline_ear = None
-        st.session_state.ear_threshold = None
-        st.session_state.calib_start_ts = None
-        st.session_state.run_start_ts = None
-        st.rerun()
-
-with bar4:
     st.markdown(f"**Legend:** {comfort_legend()}")
 
 st.markdown("---")
 
 
-# ---------------- Webcam Stream ----------------
+# ---------------- WebRTC Stream (always on, called exactly once) ----------------
 st.subheader("📷 Webcam")
-st.caption("Click **Start** to calibrate first, then it will run automatically for the test duration.")
+st.caption("Allow camera permission. Keep webcam running; press Start assessment when ready.")
 
 webrtc_ctx = webrtc_streamer(
-    key="eye-comfort",
+    key=WEBRTC_KEY,
     mode=WebRtcMode.SENDRECV,
     video_processor_factory=EyeProcessor,
     media_stream_constraints={"video": True, "audio": False},
     async_processing=True,
-    rtc_configuration={
-        "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-    },
+    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
 )
 
 processor = webrtc_ctx.video_processor
@@ -646,7 +585,7 @@ ph_report = st.empty()
 
 
 def _render_idle():
-    ph_task.info("Press **Start** above. Make sure your face is centered in the webcam.")
+    ph_task.info("Press **Start assessment** above. Keep your face centered in the webcam.")
     ph_comfort.markdown("### Comfort score: **—**")
     ph_comfort_bar.progress(0)
     ph_break.info("No test running.")
@@ -660,10 +599,11 @@ def _render_live(last: dict):
     phase = st.session_state.phase
 
     if phase == "CALIB":
-        ph_task.info(f"Calibration running… ({int(last.get('t', 0))}s / {int(st.session_state._cfg['calib_sec'])}s)\n\nKeep your face centered.")
-        ph_break.info("Calibrating your baseline...")
+        ph_task.info("Calibration running… Keep your face centered and look at the screen naturally.")
+        ph_break.info(last.get("msg", "Calibrating..."))
+        t = float(last.get("t", 0.0))
         ph_comfort.markdown("### Comfort score: **—**")
-        ph_comfort_bar.progress(min(1.0, float(last.get("t", 0.0)) / max(1e-6, float(st.session_state._cfg["calib_sec"]))))
+        ph_comfort_bar.progress(min(1.0, t / max(1e-6, float(st.session_state._cfg["calib_sec"]))))
         ph_blink.metric("Blinking (per min)", "—")
         ph_closed.metric("Eye closure (recent)", "—")
         ph_tired.metric("Tiredness level", "—")
@@ -695,16 +635,15 @@ def _render_live(last: dict):
         ph_closed.metric("Eye closure (recent)", "—" if pc is None else f"{float(pc)*100.0:.0f}%")
         ph_tired.metric("Tiredness level", "—" if F is None else f"{float(F):.2f}")
 
-        msw = last.get("microsleeps_window", 0)
+        msw = int(last.get("microsleeps_window", 0))
         ph_hint.caption(f"Tip: Low blinking + higher eye closure usually means fatigue. Microsleeps in window: {msw}")
         return
 
     if phase == "DONE":
         ph_task.success("Run finished. Saving report…")
-        ph_hint.caption("You can press Start again to run a new session.")
+        ph_hint.caption("You can press Start assessment again for a new session.")
 
 
-# ---------------- Main render loop ----------------
 if processor is None:
     _render_idle()
     st.stop()
@@ -716,9 +655,7 @@ if st.session_state.phase == "IDLE":
 else:
     _render_live(last)
 
-# ---------------- Save report when DONE ----------------
 if st.session_state.phase == "DONE":
-    # pull rows from processor
     rows = processor.pop_rows()
     if rows:
         df = pd.DataFrame(rows)
@@ -749,26 +686,17 @@ if st.session_state.phase == "DONE":
         lstm_prob=None,
     )
 
-    baseline_blinks = df[df["t"] <= 10.0]["blink_rate_bpm"]
-    baseline_blink_rate = float(baseline_blinks.mean()) if len(baseline_blinks) else None
-
-    cnn_hist_final = df["cnn_sleepy_ewma"].dropna().tail(25)
-    trend_final = None
-    if len(cnn_hist_final) >= 8:
-        trend_final = float(cnn_hist_final.iloc[-1] - cnn_hist_final.iloc[0]) / max(1.0, len(cnn_hist_final))
-
     advice = recommendations_dynamic(
         level=level_final,
         score01=float(score_final),
         perclos=float(perclos_final),
         blink_rate=float(blink_final),
         cnn_sleepy=cnn_final_prob,
-        baseline_blink_rate=baseline_blink_rate,
+        baseline_blink_rate=None,
         ear_drop_ratio=float(df["ear_drop_ratio"].dropna().mean()) if len(df["ear_drop_ratio"].dropna()) else 1.0,
-        trend_cnn=trend_final,
+        trend_cnn=None,
     )
 
-    avg_fps = float(df["fps"].dropna().mean()) if len(df["fps"].dropna()) else None
     final_fatigue_load = float(df["fatigue_load"].tail(1).iloc[0]) if "fatigue_load" in df.columns else None
     microsleeps_win = int(df["microsleep_count_window"].tail(1).iloc[0]) if "microsleep_count_window" in df.columns else 0
     final_comfort = int(df["comfort_score_100"].tail(1).iloc[0]) if "comfort_score_100" in df.columns else comfort_score_from_risk(float(score_final))
@@ -786,9 +714,9 @@ if st.session_state.phase == "DONE":
         "final_comfort_score_100": int(final_comfort),
         "final_fatigue_load": None if final_fatigue_load is None else float(final_fatigue_load),
         "microsleeps_2min": int(microsleeps_win),
-        "avg_fps": None if avg_fps is None else float(avg_fps),
         "advice_title": advice.title,
         "fusion_reasons": reasons_final,
+        "app_version": APP_VERSION,
     }
 
     session_path = SESS_DIR / f"{st.session_state._cfg['user_name']}_{session_payload['timestamp']}.json"
@@ -807,7 +735,6 @@ if st.session_state.phase == "DONE":
 ### {advice.title}
 """
     )
-
     for b in advice.bullets:
         st.write("• " + b)
 
@@ -818,4 +745,4 @@ if st.session_state.phase == "DONE":
         mime="text/csv",
     )
 
-    st.info("Press **Start** above to run again. If the webcam freezes, refresh the page.")
+    st.info("Press **Start assessment** above to run again. If webcam freezes, refresh the page.")
