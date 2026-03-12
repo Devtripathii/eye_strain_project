@@ -33,8 +33,11 @@ CAMERA_GRACE_SEC = float(os.getenv("EYEGUARD_CAMERA_GRACE", "5.0"))
 # ── EAR / calibration ─────────────────────────────────────────────────────────
 EAR_SMOOTHER_ALPHA       = float(os.getenv("EYEGUARD_EAR_ALPHA",      "0.25"))
 CALIB_TRIM_PCT           = float(os.getenv("EYEGUARD_CALIB_TRIM",     "0.05"))
-CALIB_THRESHOLD_MULT     = float(os.getenv("EYEGUARD_CALIB_MULT",     "0.72"))  # FIX: was 0.68
-CALIB_HEADROOM_MIN       = float(os.getenv("EYEGUARD_HEADROOM_MIN",   "0.06"))  # NEW: min gap below baseline
+# FIX: restored to 0.68 (was incorrectly bumped to 0.72).
+# At baseline ~0.265: 0.72 gives threshold=0.191 which is ABOVE user's
+# min open-eye EAR of 0.188 → false closures. 0.68 gives 0.180 → safe.
+CALIB_THRESHOLD_MULT     = float(os.getenv("EYEGUARD_CALIB_MULT",     "0.68"))
+CALIB_HEADROOM_MIN       = float(os.getenv("EYEGUARD_HEADROOM_MIN",   "0.06"))
 CALIB_THRESHOLD_MIN      = float(os.getenv("EYEGUARD_THRESH_MIN",     "0.08"))
 CALIB_THRESHOLD_MAX_MULT = float(os.getenv("EYEGUARD_THRESH_MAX",     "0.75"))
 BLINK_HYSTERESIS         = float(os.getenv("EYEGUARD_HYSTERESIS",     "0.01"))
@@ -44,8 +47,12 @@ CNN_EVERY_N_FRAMES = int(os.getenv("EYEGUARD_CNN_FRAMES",  "8"))
 CNN_EWMA_ALPHA     = float(os.getenv("EYEGUARD_CNN_ALPHA", "0.18"))
 
 # ── Fatigue load ODE ──────────────────────────────────────────────────────────
-FATIGUE_K_UP   = float(os.getenv("EYEGUARD_K_UP",   "0.035"))  # FIX: was 0.020
-FATIGUE_K_DOWN = float(os.getenv("EYEGUARD_K_DOWN", "0.060"))  # FIX: was 0.050
+# FIX: k_up restored to 0.020 (was bumped to 0.035).
+# At 0.035 with moderate risk the load hits micro_lo=0.25 in ~7s,
+# triggering micro-breaks almost immediately. 0.020 gives ~12s which
+# is still responsive but avoids false alarms in a 50s assessment.
+FATIGUE_K_UP   = float(os.getenv("EYEGUARD_K_UP",   "0.020"))
+FATIGUE_K_DOWN = float(os.getenv("EYEGUARD_K_DOWN", "0.060"))
 FATIGUE_K_LEAK = float(os.getenv("EYEGUARD_K_LEAK", "0.003"))
 
 # ── Break scheduler ───────────────────────────────────────────────────────────
@@ -64,5 +71,5 @@ BASELINE_MIN_DURATION = int(os.getenv("EYEGUARD_BASELINE_MIN_DUR",    "20"))
 BASELINE_MIN_FRAMES   = int(os.getenv("EYEGUARD_BASELINE_MIN_FRAMES", "100"))
 
 # ── App metadata ──────────────────────────────────────────────────────────────
-APP_VERSION = "phase2-v4"
+APP_VERSION = "phase2-v5"
 APP_TITLE   = "EyeGuard"
