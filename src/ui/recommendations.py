@@ -1,7 +1,18 @@
 from __future__ import annotations
 
+"""
+recommendations_dynamic  —  metric-driven advice engine
+────────────────────────────────────────────────────────
+Changes from original:
+  1. Break level thresholds aligned with new fuse_risk score range
+  2. PERCLOS thresholds match fusion.py (screen-use values)
+  3. Blink rate advice widened for short assessment windows
+  4. Cleaner bullet composition — no duplicate tips
+  5. Reasons appended only when genuinely informative
+"""
+
 from dataclasses import dataclass
-from typing import List, Dict, Any
+from typing import List
 
 
 @dataclass
@@ -25,109 +36,143 @@ def recommendations_dynamic(
     trend_cnn: float | None = None,
 ) -> Advice:
     """
-    Metric-driven recommendations (more variety, more precision).
+    Generates contextual recommendations based on current fatigue signals.
 
-    Parameters:
-      score01: 0..1 risk score
-      perclos: 0..1
-      blink_rate: blinks/min
-      cnn_sleepy: 0..1 (optional)
-      baseline_blink_rate: user baseline (optional)
-      ear_drop_ratio: ear / baseline_ear (optional), lower => more closure
-      trend_cnn: slope-like (-1..+1) or small float indicating increasing fatigue (optional)
+    Parameters
+    ----------
+    level              : "LOW" | "MED" | "HIGH"
+    score01            : smoothed risk score 0..1
+    perclos            : fraction of time eyes closed 0..1
+    blink_rate         : blinks per minute
+    cnn_sleepy         : CNN sleepiness probability 0..1 (optional)
+    baseline_blink_rate: user's personal baseline (optional)
+    ear_drop_ratio     : current EAR / baseline EAR (optional)
+    trend_cnn          : CNN trend slope (optional)
     """
-    level = (level or "").upper().strip()
+    level   = (level or "LOW").upper().strip()
     score01 = _clamp01(score01)
 
-    bullets: List[str] = []
-    reasons: List[str] = []
+    reasons: list[str] = []
+    bullets: list[str] = []
 
-    # --- Interpret signals ---
+    # ── Collect informative reasons ───────────────────────────────────────────
     if cnn_sleepy is not None:
         cs = _clamp01(cnn_sleepy)
-        if cs >= 0.70:
-            reasons.append(f"CNN indicates frequent eye-closure (sleepy={cs:.2f}).")
-        elif cs >= 0.45:
-            reasons.append(f"CNN indicates mild eye-closure (sleepy={cs:.2f}).")
+        if cs >= 0.65:
+            reasons.append(f"eye-closure model shows strong fatigue ({cs:.0%})")
+        elif cs >= 0.40:
+            reasons.append(f"eye-closure model shows mild fatigue ({cs:.0%})")
 
-    if perclos >= 0.25:
-        reasons.append(f"PERCLOS is high ({perclos:.2f}).")
-    elif perclos >= 0.15:
-        reasons.append(f"PERCLOS is moderate ({perclos:.2f}).")
+    if perclos >= 0.20:
+        reasons.append(f"eyes were closed {perclos:.0%} of the time (high)")
+    elif perclos >= 0.12:
+        reasons.append(f"eyes were closed {perclos:.0%} of the time (moderate)")
 
-    # Blink baseline comparison
     if baseline_blink_rate is not None and baseline_blink_rate > 0:
         ratio = blink_rate / baseline_blink_rate
-        if ratio < 0.65:
-            reasons.append(f"Blink rate dropped vs your baseline ({blink_rate:.0f}/min vs {baseline_blink_rate:.0f}/min).")
-        elif ratio > 1.50:
-            reasons.append(f"Blink rate is elevated vs baseline ({blink_rate:.0f}/min). Possible irritation.")
+        if ratio < 0.60:
+            reasons.append(
+                f"blink rate dropped to {blink_rate:.0f}/min "
+                f"(your baseline is {baseline_blink_rate:.0f}/min)"
+            )
+        elif ratio > 1.60:
+            reasons.append(
+                f"blink rate rose to {blink_rate:.0f}/min "
+                f"(baseline {baseline_blink_rate:.0f}/min) — possible irritation"
+            )
     else:
-        if blink_rate < 8:
-            reasons.append(f"Blink rate is low ({blink_rate:.0f}/min).")
-        elif blink_rate > 30:
-            reasons.append(f"Blink rate is high ({blink_rate:.0f}/min). Possible dryness/irritation.")
+        if blink_rate < 6:
+            reasons.append(f"blink rate is very low ({blink_rate:.0f}/min) — staring detected")
+        elif blink_rate < 12:
+            reasons.append(f"blink rate is low ({blink_rate:.0f}/min)")
+        elif blink_rate > 35:
+            reasons.append(f"blink rate is elevated ({blink_rate:.0f}/min) — possible dryness")
 
-    if ear_drop_ratio is not None:
-        if ear_drop_ratio < 0.85:
-            reasons.append("Your EAR dropped noticeably from baseline (more squint/closure).")
+    if ear_drop_ratio is not None and ear_drop_ratio < 0.82:
+        reasons.append("eye opening noticeably reduced from your baseline")
 
-    if trend_cnn is not None:
-        if trend_cnn > 0.03:
-            reasons.append("Fatigue trend is increasing (CNN trend rising).")
+    if trend_cnn is not None and trend_cnn > 0.03:
+        reasons.append("fatigue trend is increasing over this session")
 
-    # --- Decide break type ---
-    # 0 = none, 1 = micro, 2 = short, 3 = long
-    break_level = 0
-    if score01 >= 0.75 or perclos >= 0.30:
-        break_level = 3
-    elif score01 >= 0.55 or perclos >= 0.22:
-        break_level = 2
-    elif score01 >= 0.35 or blink_rate < 10:
-        break_level = 1
+    # ── Determine break level from smoothed score + perclos ───────────────────
+    # Aligned with new fuse_risk thresholds
+    if score01 >= 0.55 or perclos >= 0.20:
+        break_level = 3   # long break
+    elif score01 >= 0.35 or perclos >= 0.14:
+        break_level = 2   # short break
+    elif score01 >= 0.20 or blink_rate < 10:
+        break_level = 1   # micro break
+    else:
+        break_level = 0   # all good
 
-    # --- Compose advice bullets ---
+    # ── Build advice ──────────────────────────────────────────────────────────
     if break_level == 3:
-        title = "🚨 Break recommended NOW (5–10 minutes)"
-        bullets += [
-            "Look 20 feet away for 20–30 seconds, repeat 3–5 times.",
-            "Do 10 slow blinks: close gently, pause 1 sec, open.",
-            "Stand up + stretch neck/shoulders. Hydrate if possible.",
-            "Lower brightness or enable night light / warm color filter.",
+        title = "🚨 Take a proper break now (5–10 min)"
+        bullets = [
+            "Stop screen work — close your laptop or turn away completely.",
+            "20-20-20: look at something 20 feet away for 20 seconds, repeat 3×.",
+            "Do 10 slow deliberate blinks: close gently, hold 1s, open slowly.",
+            "Stand up, stretch neck and shoulders, drink some water.",
         ]
+        if perclos >= 0.20:
+            bullets.append(
+                f"Your eyes were closed {perclos:.0%} of frames — "
+                "a strong sign of fatigue building up."
+            )
+
     elif break_level == 2:
-        title = "⏳ Take a short break soon (2–3 minutes)"
-        bullets += [
-            "2 minutes off-screen: look far away and relax focus.",
-            "Do 6–8 slow blinks to re-wet eyes.",
-            "Increase font size slightly to reduce squinting.",
-            "Check glare: rotate screen or adjust room lighting.",
+        title = "⏳ Short break recommended (2–3 min)"
+        bullets = [
+            "Look away from the screen for 2 minutes — out a window if possible.",
+            "Do 6–8 slow blinks to refresh the tear film.",
+            "Check your posture: screen slightly below eye level, arm's-length away.",
+            "Reduce glare: adjust blinds or screen angle.",
         ]
+        if blink_rate < 12:
+            bullets.append(
+                f"Blink rate is {blink_rate:.0f}/min — try blinking more "
+                "deliberately while reading."
+            )
+
     elif break_level == 1:
-        title = "✅ Micro-break suggested (20–30 seconds)"
-        bullets += [
-            "Look away from screen for 20 seconds.",
-            "Blink normally for 10 seconds (don’t force it).",
-            "Reposition: screen slightly below eye level, at arm’s length.",
+        title = "✅ Micro-break suggested (20–30 sec)"
+        bullets = [
+            "Look away for 20 seconds — relax your focus to the distance.",
+            "Blink softly 5–6 times to rewet the eye surface.",
+            "Drop your shoulders and unclench your jaw.",
         ]
+
     else:
-        title = "🟢 Keep going (good signs)"
-        bullets += [
-            "Maintain posture and comfortable screen distance.",
-            "Use 20-20-20 every 20 minutes.",
-            "Avoid staring; blink naturally.",
+        title = "🟢 Eyes looking good — keep it up"
+        bullets = [
+            "Good blink rate and eye openness — stay relaxed.",
+            "Remember 20-20-20 every 20 minutes as a habit.",
+            "Keep screen slightly below eye level to reduce lid strain.",
         ]
 
-    # Add targeted tip
-    if blink_rate < 10:
-        bullets.append("Tip: low blink rate often happens during reading—add intentional soft blinks occasionally.")
-    if perclos >= 0.25:
-        bullets.append("Tip: frequent closure can indicate fatigue—reduce continuous screen time.")
-    if cnn_sleepy is not None and cnn_sleepy >= 0.70:
-        bullets.append("Tip: your CNN eye-closure signal is strong—treat this like real fatigue.")
+    # ── Targeted extra tips (max 2, no duplicates) ────────────────────────────
+    extras: list[str] = []
 
-    # Add “why” at the end (short)
-    if reasons:
-        bullets.append("Why: " + " ".join(reasons[:3]))
+    if cnn_sleepy is not None and cnn_sleepy >= 0.65 and break_level < 3:
+        extras.append(
+            "The eye-closure model is flagging fatigue — "
+            "consider a longer break than suggested."
+        )
+
+    if ear_drop_ratio is not None and ear_drop_ratio < 0.82 and not any("reduced" in b for b in bullets):
+        extras.append(
+            "Your eye opening has reduced since calibration — "
+            "this often means squinting from glare or font size."
+        )
+
+    if trend_cnn is not None and trend_cnn > 0.03 and break_level < 2:
+        extras.append("Fatigue is trending upward — plan a break in the next few minutes.")
+
+    bullets.extend(extras[:2])
+
+    # ── Append compact reason summary ─────────────────────────────────────────
+    if reasons and break_level >= 1:
+        summary = "Signals: " + "; ".join(reasons[:3]) + "."
+        bullets.append(summary)
 
     return Advice(title=title, bullets=bullets)

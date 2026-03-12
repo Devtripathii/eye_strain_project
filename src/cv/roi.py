@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import numpy as np
 
-LEFT_EYE = [33, 160, 158, 133, 153, 144]
-RIGHT_EYE = [362, 385, 387, 263, 373, 380]
+# Match features.py — 8-point sets
+LEFT_EYE  = [33, 160, 158, 157, 133, 153, 145, 144]
+RIGHT_EYE = [362, 385, 387, 388, 263, 373, 374, 380]
 
 
-def _lm_xy(lms, idx, w, h):
+def _lm_xy(lms, idx: int, w: int, h: int) -> np.ndarray:
     p = lms[idx]
     return np.array([p.x * w, p.y * h], dtype=np.float32)
 
@@ -24,7 +25,6 @@ def crop_eye_roi(frame_bgr, lms, side: str = "left", pad: float = 0.55):
 
     bw = max(1.0, x2 - x1)
     bh = max(1.0, y2 - y1)
-
     px = bw * float(pad)
     py = bh * float(pad)
 
@@ -40,12 +40,11 @@ def crop_eye_roi(frame_bgr, lms, side: str = "left", pad: float = 0.55):
 
 
 def crop_both_eyes(frame_bgr, lms, pad: float = 0.55, min_size: int = 24):
-    left = crop_eye_roi(frame_bgr, lms, "left", pad=pad)
+    left  = crop_eye_roi(frame_bgr, lms, "left",  pad=pad)
     right = crop_eye_roi(frame_bgr, lms, "right", pad=pad)
 
     if left is None and right is None:
         return None
-
     if left is None:
         roi = right
     elif right is None:

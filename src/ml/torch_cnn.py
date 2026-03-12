@@ -23,21 +23,33 @@ class TorchEyeCnn:
 
     Expected class order: ['awake', 'sleepy'] -> index 0 = awake, index 1 = sleepy
     """
+
     def __init__(
         self,
-        model_path: str | Path,
+        model_path: str | Path | None = None,
         input_size: int = 224,
         grayscale: bool = True,
         mean: Tuple[float, ...] = (0.5,),
         std: Tuple[float, ...] = (0.5,),
         device: str = "cpu",
     ):
+        # If no path given, pull from config so callers don't hardcode it
+        if model_path is None:
+            try:
+                import config
+                model_path = config.CNN_MODEL_PATH
+            except ImportError:
+                raise RuntimeError(
+                    "No model_path provided and config.py not found. "
+                    "Pass model_path explicitly or create config.py in project root."
+                )
+
         self.model_path = Path(model_path)
         self.input_size = int(input_size)
-        self.grayscale = bool(grayscale)
-        self.mean = mean
-        self.std = std
-        self.device = device
+        self.grayscale  = bool(grayscale)
+        self.mean       = mean
+        self.std        = std
+        self.device     = device
 
         if not self.model_path.exists():
             raise FileNotFoundError(f"Missing model file: {self.model_path}")
@@ -94,8 +106,8 @@ class TorchEyeCnn:
 
         x = self.tfms(roi_rgb).unsqueeze(0).to(self.device)  # [1,C,H,W]
         logits = self.model(x)
-        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+        probs  = torch.softmax(logits, dim=1).cpu().numpy()[0]
 
-        awake = float(probs[0])
+        awake  = float(probs[0])
         sleepy = float(probs[1])
         return CnnResult(sleepy_prob=sleepy, awake_prob=awake)

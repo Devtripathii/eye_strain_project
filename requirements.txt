@@ -1,17 +1,18 @@
-streamlit
-streamlit-webrtc
-streamlit-autorefresh
-av
+# Core UI
+streamlit>=1.32.0
+streamlit-webrtc>=0.47.1
 
-opencv-python-headless
-mediapipe
-numpy
-pandas
+# Computer vision
+mediapipe>=0.10.11
+opencv-python-headless>=4.9.0
 
-torch
-torchvision
+# Deep learning
+torch>=2.2.0
+torchvision>=0.17.0
 
-scikit-learn
-tqdm
-Pillow
+# Data
+numpy>=1.26.0
+pandas>=2.2.0
 
+# Utilities
+av>=11.0.0
