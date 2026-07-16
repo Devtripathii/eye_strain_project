@@ -42,7 +42,11 @@ CALIB_THRESHOLD_MIN      = float(os.getenv("EYEGUARD_THRESH_MIN",     "0.08"))
 CALIB_THRESHOLD_MAX_MULT = float(os.getenv("EYEGUARD_THRESH_MAX",     "0.75"))
 BLINK_HYSTERESIS         = float(os.getenv("EYEGUARD_HYSTERESIS",     "0.01"))
 
-# ── CNN inference ─────────────────────────────────────────────────────────────
+# ── CNN model auto-download (optional) ────────────────────────────────────────
+# If the model file isn't present locally, EyeGuard will try to download it
+# from this URL once at startup. Set via environment variable, e.g.:
+#   EYEGUARD_CNN_MODEL_URL=https://github.com/<user>/<repo>/releases/download/<tag>/eye_model_best.pth
+CNN_MODEL_URL = os.getenv("EYEGUARD_CNN_MODEL_URL", "")
 CNN_EVERY_N_FRAMES = int(os.getenv("EYEGUARD_CNN_FRAMES",  "8"))
 CNN_EWMA_ALPHA     = float(os.getenv("EYEGUARD_CNN_ALPHA", "0.18"))
 

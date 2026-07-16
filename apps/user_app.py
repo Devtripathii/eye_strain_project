@@ -9,12 +9,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import time
 import json
 import threading
+import cv2
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Any
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
 
 import config
@@ -848,6 +850,7 @@ class EyeProcessor(VideoProcessorBase):
         self.scheduler    = None
         self.blink_dur    = None
         self.cnn          = None
+        self.cnn_load_error = None
         self.cnn_ewma: Optional[float] = None
         self.cnn_hist   = deque(maxlen=25)
         self.last_roi   = None
@@ -916,8 +919,31 @@ class EyeProcessor(VideoProcessorBase):
     def _ensure_cnn(self, enable: bool):
         if not enable or self.cnn is not None:
             return
+        if not CNN_PATH.exists():
+            self._try_download_cnn_model()
         if CNN_PATH.exists():
-            self.cnn = TorchEyeCnn(CNN_PATH, grayscale=True, device="cpu")
+            try:
+                self.cnn = TorchEyeCnn(CNN_PATH, grayscale=True, device="cpu")
+                self.cnn_load_error = None
+            except Exception as e:
+                self.cnn = None
+                self.cnn_load_error = str(e)
+        else:
+            self.cnn_load_error = "Model file not found and no download URL configured."
+
+    def _try_download_cnn_model(self):
+        """Attempt one-time download of the CNN weights if a URL is configured."""
+        url = getattr(config, "CNN_MODEL_URL", "")
+        if not url:
+            return
+        try:
+            import urllib.request
+            CNN_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = CNN_PATH.with_suffix(".tmp")
+            urllib.request.urlretrieve(url, tmp_path)
+            tmp_path.rename(CNN_PATH)
+        except Exception as e:
+            self.cnn_load_error = f"CNN download failed: {e}"
 
     def _init_runtime(self, ear_threshold: float, cfg: RuntimeCfg):
         hysteresis = config.BLINK_HYSTERESIS
@@ -954,7 +980,6 @@ class EyeProcessor(VideoProcessorBase):
         )
 
     def recv(self, frame):
-        import cv2
         tick    = self.timebase.tick()
         dt      = float(tick.dt)
         fps     = float(tick.fps)
@@ -1357,7 +1382,6 @@ def metric_card_spark(label: str, value: str, unit: str,
 def render_comfort_ring(score: int | None, css: str, band_label: str,
                         is_live: bool = False):
     """Render the animated SVG ring via st.components to bypass HTML sanitiser."""
-    import streamlit.components.v1 as components
 
     R = 80
     C = 502.65   # 2π × 80
@@ -1728,7 +1752,9 @@ def page_profile():
         enable_cnn       = st.checkbox("Use CNN model",          value=st.session_state.profile.get("enable_cnn", True))
         enable_scheduler = st.checkbox("Smart break reminders",  value=st.session_state.profile.get("enable_scheduler", True))
     with c2:
-        cnn_status = "✅ Loaded" if CNN_PATH.exists() else "❌ Not found"
+        cnn_status = "✅ Loaded" if CNN_PATH.exists() else (
+            "⏳ Will attempt download on first run" if config.CNN_MODEL_URL
+            else "❌ Not found — CNN scoring disabled, other 6 signals unaffected")
         st.markdown(f"""<div class="metric-card" style="margin-top:8px;">
             <div class="metric-label">CNN Model Status</div>
             <div style="font-family:var(--font-mono);font-size:15px;color:var(--aqua)">{cnn_status}</div>
