@@ -1,8 +1,8 @@
 {
   "user": "User",
-  "ema_blink_rate": 13.325371541191096,
-  "ema_perclos": 0.09843000589429929,
-  "ema_ear_mean": 0.24917983481987852,
+  "ema_blink_rate": 8.794863372888628,
+  "ema_perclos": 0.0717366845423707,
+  "ema_ear_mean": 0.24056201326712875,
   "alpha": 0.15,
   "min_duration_sec": 20,
   "min_frames_ok": 100

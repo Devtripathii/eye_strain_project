@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import math
 import numpy as np
-from typing import Optional
 
 
 # ── Landmark indices (MediaPipe 468-point mesh) ────────────────────────────

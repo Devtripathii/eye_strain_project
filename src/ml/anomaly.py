@@ -20,7 +20,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 import numpy as np
 from collections import deque
 from pathlib import Path

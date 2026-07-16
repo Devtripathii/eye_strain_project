@@ -24,18 +24,32 @@ def fuse_risk(
     blink_rate: float,
     cnn_prob: float | None,
     lstm_prob: float | None,
+    ibr: float | None = None,
+    mar: float | None = None,
+    ear_asym: float | None = None,
 ) -> tuple[str, float, list[str]]:
     """
     Returns (level, smoothed_score, reasons).
 
     Weights (no CNN):  PERCLOS 0.50 + blink 0.25 = 0.75 max
-    Weights (with CNN): adds up to 0.35 → total 1.10 → clamped to 1.0
+    Weights (with CNN): adds up to 0.35 → total 1.10
+    Weights (novel signals, always-on when data given): IBR 0.15 + MAR 0.10 + asym 0.10 = 0.35 max
+    Grand total possible ~1.45 → clamped to 1.0 at the end.
 
     PERCLOS thresholds (screen use):
       ≥ 0.20 → high   ≥ 0.12 → moderate   ≥ 0.07 → slight
 
     Blink rate thresholds:
       < 6/min → very low    < 12/min → low    > 35/min → irritation
+
+    IBR thresholds (incomplete blink ratio):
+      ≥ 0.50 → high incomplete-blink rate   ≥ 0.30 → moderate
+
+    MAR thresholds (yawn / mouth aspect ratio):
+      ≥ 0.50 → active yawning signal
+
+    EAR asymmetry thresholds (|L-R| EAR, unilateral droop proxy):
+      ≥ 0.045 → strong asymmetry   ≥ 0.025 → mild asymmetry
 
     Risk levels:
       HIGH ≥ 0.55    MED ≥ 0.28    LOW < 0.28
@@ -92,7 +106,34 @@ def fuse_risk(
             raw_score += 0.15
             reasons.append(f"Temporal fatigue signal ({lp:.2f}).")
 
-    # ── 5. Clamp + EWMA smoothing ─────────────────────────────────────────────
+    # ── 5. IBR (incomplete blink ratio) ──────────────────────────────────────
+    if ibr is not None:
+        ib = float(clamp(ibr) or 0.0)
+        if ib >= 0.50:
+            raw_score += 0.15
+            reasons.append(f"High incomplete-blink ratio ({ib*100:.0f}%).")
+        elif ib >= 0.30:
+            raw_score += 0.08
+            reasons.append(f"Moderate incomplete-blink ratio ({ib*100:.0f}%).")
+
+    # ── 6. MAR (yawn) ─────────────────────────────────────────────────────────
+    if mar is not None:
+        m = float(mar)
+        if m >= 0.50:
+            raw_score += 0.10
+            reasons.append(f"Yawning detected (MAR={m:.2f}).")
+
+    # ── 7. EAR asymmetry (unilateral droop proxy) ───────────────────────────
+    if ear_asym is not None:
+        ea = float(ear_asym)
+        if ea >= 0.045:
+            raw_score += 0.10
+            reasons.append(f"Strong eye asymmetry (Δ={ea:.3f}).")
+        elif ea >= 0.025:
+            raw_score += 0.05
+            reasons.append(f"Mild eye asymmetry (Δ={ea:.3f}).")
+
+    # ── 8. Clamp + EWMA smoothing ─────────────────────────────────────────────
     raw_score = max(0.0, min(1.0, raw_score))
 
     if _score_ewma is None:

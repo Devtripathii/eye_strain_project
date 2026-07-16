@@ -46,3 +46,15 @@ data/processed/
 # If you want to store model weights in GitHub, comment the next line.
 models/*.pth
 models/*.pt
+
+env_cv311/
+env*/
+venv*/
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+*.egg-info/
+.DS_Store
+outputs/sessions/*.json
+data/user_profiles/*.json

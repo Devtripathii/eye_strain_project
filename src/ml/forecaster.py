@@ -24,7 +24,6 @@ from __future__ import annotations
 import numpy as np
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional
 
 
 WINDOW_SEC           = 60     # use last 60s of data for trend
